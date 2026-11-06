@@ -800,8 +800,6 @@ function PayloadSamplesChart({ payloadHistory }) {
 function App() {
     const [isConnected, setIsConnected] = useState(false);
     const [sensorData, setSensorData] = useState(null);
-    const [rssiHistory, setRssiHistory] = useState([]);
-    const [snrHistory, setSnrHistory] = useState([]);
     const [payloadHistory, setPayloadHistory] = useState([]);
     const [error, setError] = useState(null);
     const [messageCount, setMessageCount] = useState(0);
@@ -865,23 +863,9 @@ function App() {
                 setSensorData(data);
                 setMessageCount(prev => prev + 1);
 
-                // Update history for charts (keep last 50 points)
-                const timestamp = new Date(data.timestamp).toLocaleTimeString();
-                
-                setRssiHistory(prev => {
-                    const newHistory = [...prev, { time: timestamp, rssi: data.rssi }];
-                    console.log('RSSI history:', newHistory);
-                    return newHistory.slice(-100);
-                });
-
-                setSnrHistory(prev => {
-                    const newHistory = [...prev, { time: timestamp, snr: data.snr }];
-                    console.log('SNR history:', newHistory);
-                    return newHistory.slice(-100);
-                });
-
                 // Update payload history if decoded payload exists
                 if (data.decodedPayload) {
+                    const timestamp = new Date(data.timestamp).toLocaleTimeString();
                     // Handle chunked-dataset format - add chunks as they arrive
                     if (data.decodedPayload.kind === 'chunk' && data.decodedPayload.chunkSamples) {
                         setPayloadHistory(prev => {
@@ -968,7 +952,7 @@ function App() {
                 </h1>
                 {error && <div style={{ color: 'red', marginTop: '10px', fontSize: '14px' }}>Error: {error}</div>}
                 <div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
-                    Messages received: {messageCount} | RSSI points: {rssiHistory.length} | SNR points: {snrHistory.length} | Payloads: {payloadHistory.length} | Total samples: {payloadHistory.reduce((sum, p) => sum + (p.samples?.length || 0), 0)}
+                    Messages received: {messageCount} | Payloads: {payloadHistory.length} | Total samples: {payloadHistory.reduce((sum, p) => sum + (p.samples?.length || 0), 0)}
                 </div>
             </div>
 
@@ -1024,16 +1008,6 @@ function App() {
                     </div>
                 </div>
             )}
-
-            <div className="chart-container">
-                <h2>RSSI History (dBm)</h2>
-                <SimpleLineChart data={rssiHistory} dataKey="rssi" color="#8884d8" />
-            </div>
-
-            <div className="chart-container" style={{ marginTop: '20px' }}>
-                <h2>SNR History (dB)</h2>
-                <SimpleLineChart data={snrHistory} dataKey="snr" color="#82ca9d" />
-            </div>
 
             <div className="chart-container" style={{ marginTop: '20px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>

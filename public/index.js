@@ -1,4 +1,4 @@
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 function SimpleLineChart({ data, dataKey, color, title }) {
     if (!data || data.length === 0) {
@@ -85,6 +85,43 @@ function SimpleLineChart({ data, dataKey, color, title }) {
 
 function PayloadSamplesHistoryChart({ payloadHistory }) {
     const [hoverData, setHoverData] = useState(null);
+    const [zoom, setZoom] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
+    const [isDragging, setIsDragging] = useState(false);
+    const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+    const [lockScroll, setLockScroll] = useState(false);
+    const svgRef = useRef(null);
+
+    // Handle scroll lock with passive: false
+    useEffect(() => {
+        const svg = svgRef.current;
+        if (!svg) return;
+
+        const handleWheelEvent = (e) => {
+            if (lockScroll) {
+                e.preventDefault();
+                e.stopPropagation();
+                // Handle zoom
+                const rect = svg.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                const scaleAmount = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = Math.max(0.5, Math.min(10, zoom.scale * scaleAmount));
+
+                const scaleChange = newScale / zoom.scale;
+                const newOffsetX = mouseX - (mouseX - zoom.offsetX) * scaleChange;
+                const newOffsetY = mouseY - (mouseY - zoom.offsetY) * scaleChange;
+
+                setZoom({ scale: newScale, offsetX: newOffsetX, offsetY: newOffsetY });
+            }
+        };
+
+        svg.addEventListener('wheel', handleWheelEvent, { passive: false });
+
+        return () => {
+            svg.removeEventListener('wheel', handleWheelEvent, { passive: false });
+        };
+    }, [lockScroll, zoom]);
 
     if (!payloadHistory || payloadHistory.length === 0) {
         return (
@@ -143,6 +180,9 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
     const maxVal = validSamples.length ? Math.max(...validSamples) : 100;
     const range = maxVal - minVal || 1;
 
+    // Apply zoom transformation
+    const transform = `translate(${zoom.offsetX}, ${zoom.offsetY}) scale(${zoom.scale})`;
+
     // Calculate points for the line
     const points = allSamples.map((val, i) => {
         const x = padding + (i / (allSamples.length - 1 || 1)) * chartWidth;
@@ -171,7 +211,34 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
     const completeCount = payloadHistory.filter(p => !p.isChunk).length;
     const gapCount = payloadHistory.filter((p, i) => !p.isChunk && i < payloadHistory.length - 1).length;
 
-    // Handle mouse move for tooltip
+    // Handle mouse wheel zoom
+    const handleWheel = (e) => {
+        if (lockScroll) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        const svg = e.currentTarget;
+        const rect = svg.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const scaleAmount = e.deltaY > 0 ? 0.9 : 1.1;
+        const newScale = Math.max(0.5, Math.min(10, zoom.scale * scaleAmount));
+
+        // Calculate new offset to zoom towards mouse position
+        const scaleChange = newScale / zoom.scale;
+        const newOffsetX = mouseX - (mouseX - zoom.offsetX) * scaleChange;
+        const newOffsetY = mouseY - (mouseY - zoom.offsetY) * scaleChange;
+
+        setZoom({ scale: newScale, offsetX: newOffsetX, offsetY: newOffsetY });
+    };
+
+    // Handle mouse drag for panning
+    const handleMouseDown = (e) => {
+        setIsDragging(true);
+        setDragStart({ x: e.clientX - zoom.offsetX, y: e.clientY - zoom.offsetY });
+    };
+
     const handleMouseMove = (e) => {
         const svg = e.currentTarget;
         const rect = svg.getBoundingClientRect();
@@ -180,14 +247,24 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
         const mouseX = (e.clientX - rect.left) * scaleX;
         const mouseY = (e.clientY - rect.top) * scaleY;
 
-        // Find closest point
+        if (isDragging) {
+            setZoom({
+                ...zoom,
+                offsetX: e.clientX - dragStart.x,
+                offsetY: e.clientY - dragStart.y
+            });
+            return;
+        }
+
+        // Find closest point (account for zoom)
         let closestPoint = null;
         let minDist = Infinity;
 
         points.forEach(p => {
             if (p.y !== null) {
-                const dist = Math.abs(p.x - mouseX);
-                if (dist < minDist && dist < 20) {
+                const transformedX = p.x * zoom.scale + zoom.offsetX;
+                const dist = Math.abs(transformedX - mouseX);
+                if (dist < minDist && dist < 20 / zoom.scale) {
                     minDist = dist;
                     closestPoint = p;
                 }
@@ -196,8 +273,8 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
 
         if (closestPoint) {
             setHoverData({
-                x: closestPoint.x,
-                y: closestPoint.y,
+                x: closestPoint.x * zoom.scale + zoom.offsetX,
+                y: closestPoint.y * zoom.scale + zoom.offsetY,
                 value: closestPoint.val,
                 info: closestPoint.info,
                 screenX: e.clientX,
@@ -208,8 +285,17 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
         }
     };
 
+    const handleMouseUp = () => {
+        setIsDragging(false);
+    };
+
     const handleMouseLeave = () => {
+        setIsDragging(false);
         setHoverData(null);
+    };
+
+    const resetZoom = () => {
+        setZoom({ scale: 1, offsetX: 0, offsetY: 0 });
     };
 
     return (
@@ -217,107 +303,127 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
             <div style={{ marginBottom: '10px', fontSize: '14px', color: '#666' }}>
                 Total: {payloadHistory.length} entries ({completeCount} complete, {chunkCount} chunks) | Total samples: {validSamples.length} | Gaps: {gapCount}
                 {hoverData && <span style={{ marginLeft: '15px', color: '#ff6b6b', fontWeight: 'bold' }}>Hovered Value: {hoverData.value}</span>}
+                <button
+                    onClick={resetZoom}
+                    style={{ marginLeft: '15px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer', backgroundColor: '#ddd', border: 'none', borderRadius: '4px' }}
+                >
+                    Reset Zoom
+                </button>
+                <button
+                    onClick={() => setLockScroll(!lockScroll)}
+                    style={{ marginLeft: '10px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer', backgroundColor: lockScroll ? '#ff6b6b' : '#4CAF50', color: 'white', border: 'none', borderRadius: '4px' }}
+                >
+                    {lockScroll ? '🔓 Unlock' : '🔒 Lock Scroll'}
+                </button>
+                <span style={{ marginLeft: '10px', fontSize: '12px', color: '#888' }}>
+                    (Scroll to zoom, drag to pan)
+                </span>
             </div>
-            <div style={{ position: 'relative' }}>
-                <svg 
-                    width="100%" 
-                    height={height} 
-                    viewBox={`0 0 ${width} ${height}`} 
-                    style={{ overflow: 'visible' }}
+            <div style={{ position: 'relative', border: '2px solid #ddd', borderRadius: '8px', padding: '10px', overflow: lockScroll ? 'hidden' : 'visible' }}>
+                <svg
+                    ref={svgRef}
+                    width="100%"
+                    height={height}
+                    viewBox={`0 0 ${width} ${height}`}
+                    style={{ overflow: 'visible', cursor: isDragging ? 'grabbing' : 'grab' }}
+                    onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseLeave}
                 >
-                    {/* Grid lines - horizontal */}
-                    {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => (
-                        <line
-                            key={`h-${p}`}
-                            x1={padding}
-                            y1={padding + p * chartHeight}
-                            x2={width - padding}
-                            y2={padding + p * chartHeight}
-                            stroke="#e0e0e0"
-                            strokeWidth="1"
-                        />
-                    ))}
-                    {/* Y-axis labels */}
-                    {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
-                        const val = maxVal - p * range;
-                        return (
-                            <text
-                                key={`yl-${p}`}
-                                x={padding - 10}
-                                y={padding + p * chartHeight + 5}
-                                textAnchor="end"
-                                fontSize="11"
-                                fill="#666"
-                            >
-                                {val.toFixed(0)}
-                            </text>
-                        );
-                    })}
-                    {/* Main lines (split at gaps) */}
-                    {polylines.map((lineStr, i) => (
-                        <polyline
-                            key={`poly-${i}`}
-                            points={lineStr}
-                            fill="none"
-                            stroke="#ff6b6b"
-                            strokeWidth="1.5"
-                            strokeLinejoin="round"
-                            strokeLinecap="round"
-                        />
-                    ))}
-                    {/* Start markers (green circles for complete, orange for chunks) */}
-                    {points.filter(p => p.info?.isStart).map((p, i) => (
-                        <circle
-                            key={`start-${i}`}
-                            cx={p.x}
-                            cy={p.y}
-                            r="5"
-                            fill={p.info.isChunk ? "#ff9800" : "#4caf50"}
-                            stroke="white"
-                            strokeWidth="2"
-                        />
-                    ))}
-                    {/* End markers (blue circles for complete, orange for chunks) */}
-                    {points.filter(p => p.info?.isEnd).map((p, i) => (
-                        <circle
-                            key={`end-${i}`}
-                            cx={p.x}
-                            cy={p.y}
-                            r="5"
-                            fill={p.info.isChunk ? "#ff9800" : "#2196f3"}
-                            stroke="white"
-                            strokeWidth="2"
-                        />
-                    ))}
-                    {/* Hover indicator line */}
-                    {hoverData && (
-                        <line
-                            x1={hoverData.x}
-                            y1={padding}
-                            x2={hoverData.x}
-                            y2={height - padding}
-                            stroke="#666"
-                            strokeWidth="1"
-                            strokeDasharray="4"
-                        />
-                    )}
-                    {/* Hover indicator circle */}
-                    {hoverData && (
-                        <circle
-                            cx={hoverData.x}
-                            cy={hoverData.y}
-                            r="6"
-                            fill="#ff6b6b"
-                            stroke="white"
-                            strokeWidth="2"
-                        />
-                    )}
-                    {/* Legend */}
-                    <text x={padding} y={height - 10} fontSize="12" fill="#666">
-                        <tspan fill="#4caf50">●</tspan> Complete Start <tspan dx="5" fill="#2196f3">●</tspan> Complete End <tspan dx="5" fill="#ff9800">●</tspan> Chunk
-                    </text>
+                    <g transform={transform}>
+                        {/* Grid lines - horizontal */}
+                        {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => (
+                            <line
+                                key={`h-${p}`}
+                                x1={padding}
+                                y1={padding + p * chartHeight}
+                                x2={width - padding}
+                                y2={padding + p * chartHeight}
+                                stroke="#e0e0e0"
+                                strokeWidth="1"
+                            />
+                        ))}
+                        {/* Y-axis labels */}
+                        {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
+                            const val = maxVal - p * range;
+                            return (
+                                <text
+                                    key={`yl-${p}`}
+                                    x={padding - 10}
+                                    y={padding + p * chartHeight + 5}
+                                    textAnchor="end"
+                                    fontSize="11"
+                                    fill="#666"
+                                >
+                                    {val.toFixed(0)}
+                                </text>
+                            );
+                        })}
+                        {/* Main lines (split at gaps) */}
+                        {polylines.map((lineStr, i) => (
+                            <polyline
+                                key={`poly-${i}`}
+                                points={lineStr}
+                                fill="none"
+                                stroke="#ff6b6b"
+                                strokeWidth="1.5"
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                            />
+                        ))}
+                        {/* Start markers (green circles for complete, orange for chunks) */}
+                        {points.filter(p => p.info?.isStart).map((p, i) => (
+                            <circle
+                                key={`start-${i}`}
+                                cx={p.x}
+                                cy={p.y}
+                                r="5"
+                                fill={p.info.isChunk ? "#ff9800" : "#4caf50"}
+                                stroke="white"
+                                strokeWidth="2"
+                            />
+                        ))}
+                        {/* End markers (blue circles for complete, orange for chunks) */}
+                        {points.filter(p => p.info?.isEnd).map((p, i) => (
+                            <circle
+                                key={`end-${i}`}
+                                cx={p.x}
+                                cy={p.y}
+                                r="5"
+                                fill={p.info.isChunk ? "#ff9800" : "#2196f3"}
+                                stroke="white"
+                                strokeWidth="2"
+                            />
+                        ))}
+                        {/* Hover indicator line */}
+                        {hoverData && (
+                            <line
+                                x1={hoverData.x / zoom.scale - zoom.offsetX / zoom.scale}
+                                y1={padding}
+                                x2={hoverData.x / zoom.scale - zoom.offsetX / zoom.scale}
+                                y2={height - padding}
+                                stroke="#666"
+                                strokeWidth="1"
+                                strokeDasharray="4"
+                            />
+                        )}
+                        {/* Hover indicator circle */}
+                        {hoverData && (
+                            <circle
+                                cx={hoverData.x / zoom.scale - zoom.offsetX / zoom.scale}
+                                cy={hoverData.y / zoom.scale - zoom.offsetY / zoom.scale}
+                                r="6"
+                                fill="#ff6b6b"
+                                stroke="white"
+                                strokeWidth="2"
+                            />
+                        )}
+                        {/* Legend */}
+                        <text x={padding} y={height - 10} fontSize="12" fill="#666">
+                            <tspan fill="#4caf50">●</tspan> Complete Start <tspan dx="5" fill="#2196f3">●</tspan> Complete End <tspan dx="5" fill="#ff9800">●</tspan> Chunk
+                        </text>
+                    </g>
                 </svg>
                 {/* Tooltip */}
                 {hoverData && (
@@ -350,6 +456,43 @@ function PayloadSamplesHistoryChart({ payloadHistory }) {
 
 function PayloadSamplesChart({ payloadHistory }) {
     const [hoverData, setHoverData] = useState(null);
+    const [zoom, setZoom] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
+    const [isDragging, setIsDragging] = useState(false);
+    const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+    const [lockScroll, setLockScroll] = useState(false);
+    const svgRef = useRef(null);
+
+    // Handle scroll lock with passive: false
+    useEffect(() => {
+        const svg = svgRef.current;
+        if (!svg) return;
+
+        const handleWheelEvent = (e) => {
+            if (lockScroll) {
+                e.preventDefault();
+                e.stopPropagation();
+                // Handle zoom
+                const rect = svg.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                const scaleAmount = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = Math.max(0.5, Math.min(10, zoom.scale * scaleAmount));
+
+                const scaleChange = newScale / zoom.scale;
+                const newOffsetX = mouseX - (mouseX - zoom.offsetX) * scaleChange;
+                const newOffsetY = mouseY - (mouseY - zoom.offsetY) * scaleChange;
+
+                setZoom({ scale: newScale, offsetX: newOffsetX, offsetY: newOffsetY });
+            }
+        };
+
+        svg.addEventListener('wheel', handleWheelEvent, { passive: false });
+
+        return () => {
+            svg.removeEventListener('wheel', handleWheelEvent, { passive: false });
+        };
+    }, [lockScroll, zoom]);
 
     if (!payloadHistory || payloadHistory.length === 0) {
         return (
@@ -389,6 +532,9 @@ function PayloadSamplesChart({ payloadHistory }) {
     const maxVal = Math.max(...smoothedSamples);
     const range = maxVal - minVal || 1;
 
+    // Apply zoom transformation
+    const transform = `translate(${zoom.offsetX}, ${zoom.offsetY}) scale(${zoom.scale})`;
+
     // Calculate points for the line using smoothed data
     const points = smoothedSamples.map((val, i) => {
         const x = padding + (i / (smoothedSamples.length - 1 || 1)) * chartWidth;
@@ -397,6 +543,34 @@ function PayloadSamplesChart({ payloadHistory }) {
     });
 
     const pointsString = points.map(p => `${p.x},${p.y}`).join(' ');
+
+    // Handle mouse wheel zoom
+    const handleWheel = (e) => {
+        if (lockScroll) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        const svg = e.currentTarget;
+        const rect = svg.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const scaleAmount = e.deltaY > 0 ? 0.9 : 1.1;
+        const newScale = Math.max(0.5, Math.min(10, zoom.scale * scaleAmount));
+
+        // Calculate new offset to zoom towards mouse position
+        const scaleChange = newScale / zoom.scale;
+        const newOffsetX = mouseX - (mouseX - zoom.offsetX) * scaleChange;
+        const newOffsetY = mouseY - (mouseY - zoom.offsetY) * scaleChange;
+
+        setZoom({ scale: newScale, offsetX: newOffsetX, offsetY: newOffsetY });
+    };
+
+    // Handle mouse drag for panning
+    const handleMouseDown = (e) => {
+        setIsDragging(true);
+        setDragStart({ x: e.clientX - zoom.offsetX, y: e.clientY - zoom.offsetY });
+    };
 
     // Handle mouse move for tooltip
     const handleMouseMove = (e) => {
@@ -407,13 +581,23 @@ function PayloadSamplesChart({ payloadHistory }) {
         const mouseX = (e.clientX - rect.left) * scaleX;
         const mouseY = (e.clientY - rect.top) * scaleY;
 
-        // Find closest point
+        if (isDragging) {
+            setZoom({
+                ...zoom,
+                offsetX: e.clientX - dragStart.x,
+                offsetY: e.clientY - dragStart.y
+            });
+            return;
+        }
+
+        // Find closest point (account for zoom)
         let closestPoint = null;
         let minDist = Infinity;
 
         points.forEach(p => {
-            const dist = Math.abs(p.x - mouseX);
-            if (dist < minDist && dist < 20) {
+            const transformedX = p.x * zoom.scale + zoom.offsetX;
+            const dist = Math.abs(transformedX - mouseX);
+            if (dist < minDist && dist < 20 / zoom.scale) {
                 minDist = dist;
                 closestPoint = p;
             }
@@ -421,8 +605,8 @@ function PayloadSamplesChart({ payloadHistory }) {
 
         if (closestPoint) {
             setHoverData({
-                x: closestPoint.x,
-                y: closestPoint.y,
+                x: closestPoint.x * zoom.scale + zoom.offsetX,
+                y: closestPoint.y * zoom.scale + zoom.offsetY,
                 value: closestPoint.originalVal,
                 smoothedValue: closestPoint.val,
                 index: closestPoint.index,
@@ -434,8 +618,17 @@ function PayloadSamplesChart({ payloadHistory }) {
         }
     };
 
+    const handleMouseUp = () => {
+        setIsDragging(false);
+    };
+
     const handleMouseLeave = () => {
+        setIsDragging(false);
         setHoverData(null);
+    };
+
+    const resetZoom = () => {
+        setZoom({ scale: 1, offsetX: 0, offsetY: 0 });
     };
 
     return (
@@ -443,119 +636,139 @@ function PayloadSamplesChart({ payloadHistory }) {
             <div style={{ marginBottom: '10px', fontSize: '14px', color: '#666' }}>
                 Latest payload: {samples.length} samples | Avg: {latestPayload.avg} | Min: {latestPayload.min} | Max: {latestPayload.max} | Battery: {latestPayload.battery}V
                 {hoverData && <span style={{ marginLeft: '15px', color: '#ff6b6b', fontWeight: 'bold' }}>Hovered Value: {hoverData.value}</span>}
+                <button
+                    onClick={resetZoom}
+                    style={{ marginLeft: '15px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer', backgroundColor: '#ddd', border: 'none', borderRadius: '4px' }}
+                >
+                    Reset Zoom
+                </button>
+                <button
+                    onClick={() => setLockScroll(!lockScroll)}
+                    style={{ marginLeft: '10px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer', backgroundColor: lockScroll ? '#ff6b6b' : '#4CAF50', color: 'white', border: 'none', borderRadius: '4px' }}
+                >
+                    {lockScroll ? '🔓 Unlock' : '🔒 Lock Scroll'}
+                </button>
+                <span style={{ marginLeft: '10px', fontSize: '12px', color: '#888' }}>
+                    (Scroll to zoom, drag to pan)
+                </span>
             </div>
-            <div style={{ position: 'relative' }}>
-                <svg 
-                    width="100%" 
-                    height={height} 
-                    viewBox={`0 0 ${width} ${height}`} 
-                    style={{ overflow: 'visible' }}
+            <div style={{ position: 'relative', border: '2px solid #ddd', borderRadius: '8px', padding: '10px', overflow: lockScroll ? 'hidden' : 'visible' }}>
+                <svg
+                    ref={svgRef}
+                    width="100%"
+                    height={height}
+                    viewBox={`0 0 ${width} ${height}`}
+                    style={{ overflow: 'visible', cursor: isDragging ? 'grabbing' : 'grab' }}
+                    onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseLeave}
                 >
-                    {/* Grid lines - horizontal */}
-                    {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => (
-                        <line
-                            key={`h-${p}`}
-                            x1={padding}
-                            y1={padding + p * chartHeight}
-                            x2={width - padding}
-                            y2={padding + p * chartHeight}
-                            stroke="#e0e0e0"
-                            strokeWidth="1"
-                        />
-                    ))}
-                    {/* Grid lines - vertical */}
-                    {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => (
-                        <line
-                            key={`v-${p}`}
-                            x1={padding + p * chartWidth}
-                            y1={padding}
-                            x2={padding + p * chartWidth}
-                            y2={height - padding}
-                            stroke="#e0e0e0"
-                            strokeWidth="1"
-                        />
-                    ))}
-                    {/* Y-axis labels */}
-                    {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
-                        const val = maxVal - p * range;
-                        return (
-                            <text
-                                key={`yl-${p}`}
-                                x={padding - 10}
-                                y={padding + p * chartHeight + 5}
-                                textAnchor="end"
-                                fontSize="11"
-                                fill="#666"
-                            >
-                                {val.toFixed(0)}
-                            </text>
-                        );
-                    })}
-                    {/* X-axis labels */}
-                    {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
-                        const idx = Math.floor(p * (samples.length - 1));
-                        return (
-                            <text
-                                key={`xl-${p}`}
-                                x={padding + p * chartWidth}
-                                y={height - padding + 20}
-                                textAnchor="middle"
-                                fontSize="11"
-                                fill="#666"
-                            >
-                                {idx}
-                            </text>
-                        );
-                    })}
-                    {/* Main line */}
-                    <polyline
-                        points={pointsString}
-                        fill="none"
-                        stroke="#ff6b6b"
-                        strokeWidth="2"
-                        strokeLinejoin="round"
-                        strokeLinecap="round"
-                    />
-                    {/* Data points (show every 5th point to avoid clutter) */}
-                    {points.filter((_, i) => i % 5 === 0 || i === points.length - 1).map((p, i) => (
-                        <circle
-                            key={i}
-                            cx={p.x}
-                            cy={p.y}
-                            r="3"
-                            fill="#ff6b6b"
-                            stroke="white"
-                            strokeWidth="1"
-                        />
-                    ))}
-                    {/* Hover indicator line */}
-                    {hoverData && (
-                        <line
-                            x1={hoverData.x}
-                            y1={padding}
-                            x2={hoverData.x}
-                            y2={height - padding}
-                            stroke="#666"
-                            strokeWidth="1"
-                            strokeDasharray="4"
-                        />
-                    )}
-                    {/* Hover indicator circle */}
-                    {hoverData && (
-                        <circle
-                            cx={hoverData.x}
-                            cy={hoverData.y}
-                            r="6"
-                            fill="#ff6b6b"
-                            stroke="white"
+                    <g transform={transform}>
+                        {/* Grid lines - horizontal */}
+                        {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => (
+                            <line
+                                key={`h-${p}`}
+                                x1={padding}
+                                y1={padding + p * chartHeight}
+                                x2={width - padding}
+                                y2={padding + p * chartHeight}
+                                stroke="#e0e0e0"
+                                strokeWidth="1"
+                            />
+                        ))}
+                        {/* Grid lines - vertical */}
+                        {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => (
+                            <line
+                                key={`v-${p}`}
+                                x1={padding + p * chartWidth}
+                                y1={padding}
+                                x2={padding + p * chartWidth}
+                                y2={height - padding}
+                                stroke="#e0e0e0"
+                                strokeWidth="1"
+                            />
+                        ))}
+                        {/* Y-axis labels */}
+                        {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
+                            const val = maxVal - p * range;
+                            return (
+                                <text
+                                    key={`yl-${p}`}
+                                    x={padding - 10}
+                                    y={padding + p * chartHeight + 5}
+                                    textAnchor="end"
+                                    fontSize="11"
+                                    fill="#666"
+                                >
+                                    {val.toFixed(0)}
+                                </text>
+                            );
+                        })}
+                        {/* X-axis labels */}
+                        {[0, 0.2, 0.4, 0.6, 0.8, 1].map(p => {
+                            const idx = Math.floor(p * (samples.length - 1));
+                            return (
+                                <text
+                                    key={`xl-${p}`}
+                                    x={padding + p * chartWidth}
+                                    y={height - padding + 20}
+                                    textAnchor="middle"
+                                    fontSize="11"
+                                    fill="#666"
+                                >
+                                    {idx}
+                                </text>
+                            );
+                        })}
+                        {/* Main line */}
+                        <polyline
+                            points={pointsString}
+                            fill="none"
+                            stroke="#ff6b6b"
                             strokeWidth="2"
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
                         />
-                    )}
-                    {/* Start and end labels */}
-                    <text x={padding} y={padding - 10} fontSize="12" fill="#666">Start</text>
-                    <text x={width - padding} y={padding - 10} fontSize="12" fill="#666" textAnchor="end">End</text>
+                        {/* Data points (show every 5th point to avoid clutter) */}
+                        {points.filter((_, i) => i % 5 === 0 || i === points.length - 1).map((p, i) => (
+                            <circle
+                                key={i}
+                                cx={p.x}
+                                cy={p.y}
+                                r="3"
+                                fill="#ff6b6b"
+                                stroke="white"
+                                strokeWidth="1"
+                            />
+                        ))}
+                        {/* Hover indicator line */}
+                        {hoverData && (
+                            <line
+                                x1={hoverData.x / zoom.scale - zoom.offsetX / zoom.scale}
+                                y1={padding}
+                                x2={hoverData.x / zoom.scale - zoom.offsetX / zoom.scale}
+                                y2={height - padding}
+                                stroke="#666"
+                                strokeWidth="1"
+                                strokeDasharray="4"
+                            />
+                        )}
+                        {/* Hover indicator circle */}
+                        {hoverData && (
+                            <circle
+                                cx={hoverData.x / zoom.scale - zoom.offsetX / zoom.scale}
+                                cy={hoverData.y / zoom.scale - zoom.offsetY / zoom.scale}
+                                r="6"
+                                fill="#ff6b6b"
+                                stroke="white"
+                                strokeWidth="2"
+                            />
+                        )}
+                        {/* Start and end labels */}
+                        <text x={padding} y={padding - 10} fontSize="12" fill="#666">Start</text>
+                        <text x={width - padding} y={padding - 10} fontSize="12" fill="#666" textAnchor="end">End</text>
+                    </g>
                 </svg>
                 {/* Tooltip */}
                 {hoverData && (

@@ -1,0 +1,20 @@
+{
+  "name": "sensors",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "mqtt": "^5.16.1",
+    "ws": "^8.18.0",
+    "express": "^4.19.2"
+  }
+}

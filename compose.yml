@@ -1,0 +1,15 @@
+services:
+  udp-packet-forwarder:
+    image: rakwireless/udp-packet-forwarder:latest
+    container_name: udp-packet-forwarder
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    environment:
+      MODEL: "RAK5146"
+      INTERFACE: "SPI"
+      DEVICE: "/dev/spidev0.0"
+      SERVER_HOST: "13.140.205.64"
+      SERVER_PORT: "1700"
+      BAND: "in_865_867"
+      GATEWAY_EUI_SOURCE: "chip"
